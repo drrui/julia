@@ -1,4 +1,4 @@
-# This file is a part of Julia. License is MIT: http://julialang.org/license
+# This file is a part of Julia. License is MIT: https://julialang.org/license
 
 using Core.Intrinsics: llvmcall
 
@@ -17,7 +17,7 @@ export
 # Disable 128-bit types on 32-bit Intel sytems due to LLVM problems;
 # see <https://github.com/JuliaLang/julia/issues/14818> (fixed on LLVM 3.9)
 # 128-bit atomics do not exist on AArch32.
-if (VersionNumber(Base.libllvm_version) < v"3.9-" && ARCH === :i686) ||
+if (Base.libllvm_version < v"3.9-" && ARCH === :i686) ||
         startswith(string(ARCH), "arm")
     const inttypes = (Int8, Int16, Int32, Int64,
                       UInt8, UInt16, UInt32, UInt64)
@@ -63,8 +63,8 @@ Atomic operations use an `atomic_` prefix, such as `atomic_add!`,
 """
 mutable struct Atomic{T<:AtomicTypes}
     value::T
-    Atomic{T}() where T<:AtomicTypes = new(zero(T))
-    Atomic{T}(value) where T<:AtomicTypes = new(value)
+    Atomic{T}() where {T<:AtomicTypes} = new(zero(T))
+    Atomic{T}(value) where {T<:AtomicTypes} = new(value)
 end
 
 Atomic() = Atomic{Int}()
@@ -302,8 +302,8 @@ julia> x[]
 """
 function atomic_min! end
 
-unsafe_convert{T}(::Type{Ptr{T}}, x::Atomic{T}) = convert(Ptr{T}, pointer_from_objref(x))
-setindex!{T}(x::Atomic{T}, v) = setindex!(x, convert(T, v))
+unsafe_convert(::Type{Ptr{T}}, x::Atomic{T}) where {T} = convert(Ptr{T}, pointer_from_objref(x))
+setindex!(x::Atomic{T}, v) where {T} = setindex!(x, convert(T, v))
 
 const llvmtypes = Dict(
     Bool => "i1",
@@ -316,13 +316,13 @@ const llvmtypes = Dict(
     Float32 => "float",
     Float64 => "double",
 )
-inttype{T<:Integer}(::Type{T}) = T
+inttype(::Type{T}) where {T<:Integer} = T
 inttype(::Type{Float16}) = Int16
 inttype(::Type{Float32}) = Int32
 inttype(::Type{Float64}) = Int64
 
 
-alignment{T}(::Type{T}) = ccall(:jl_alignment, Cint, (Csize_t,), sizeof(T))
+alignment(::Type{T}) where {T} = ccall(:jl_alignment, Cint, (Csize_t,), sizeof(T))
 
 # All atomic operations have acquire and/or release semantics, depending on
 # whether the load or store values. Most of the time, this is what one wants
@@ -330,8 +330,8 @@ alignment{T}(::Type{T}) = ccall(:jl_alignment, Cint, (Csize_t,), sizeof(T))
 for typ in atomictypes
     lt = llvmtypes[typ]
     ilt = llvmtypes[inttype(typ)]
-    rt = VersionNumber(Base.libllvm_version) >= v"3.6" ? "$lt, $lt*" : "$lt*"
-    irt = VersionNumber(Base.libllvm_version) >= v"3.6" ? "$ilt, $ilt*" : "$ilt*"
+    rt = Base.libllvm_version >= v"3.6" ? "$lt, $lt*" : "$lt*"
+    irt = Base.libllvm_version >= v"3.6" ? "$ilt, $ilt*" : "$ilt*"
     if VersionNumber(Base.libllvm_version) >= v"3.8"
         @eval getindex(x::Atomic{$typ}) =
             llvmcall($"""
@@ -447,7 +447,7 @@ end
 const opnames = Dict{Symbol, Symbol}(:+ => :add, :- => :sub)
 for op in [:+, :-, :max, :min]
     opname = get(opnames, op, op)
-    @eval function $(Symbol("atomic_", opname, "!")){T<:FloatTypes}(var::Atomic{T}, val::T)
+    @eval function $(Symbol("atomic_", opname, "!"))(var::Atomic{T}, val::T) where T<:FloatTypes
         IT = inttype(T)
         old = var[]
         while true

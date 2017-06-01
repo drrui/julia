@@ -1,4 +1,4 @@
-# This file is a part of Julia. License is MIT: http://julialang.org/license
+# This file is a part of Julia. License is MIT: https://julialang.org/license
 
 # tests for Core.Inference correctness and precision
 
@@ -291,8 +291,9 @@ let g() = Int <: Real ? 1 : ""
     @test Base.return_types(g, Tuple{}) == [Int]
 end
 
-NInt{N} = Tuple{Vararg{Int, N}}
+const NInt{N} = Tuple{Vararg{Int, N}}
 @test Base.eltype(NInt) === Int
+@test Base.return_types(eltype, (NInt,)) == Any[Union{Type{Int}, Type{Union{}}}] # issue 21763
 fNInt(x::NInt) = (x...)
 gNInt() = fNInt(x)
 @test Base.return_types(gNInt, ()) == Any[NInt]
@@ -411,10 +412,10 @@ Base.@pure function fpure(a=rand(); b=rand())
 end
 gpure() = fpure()
 gpure(x::Irrational) = fpure(x)
-@test which(fpure, ()).source.pure
-@test which(fpure, (typeof(pi),)).source.pure
-@test !which(gpure, ()).source.pure
-@test !which(gpure, (typeof(pi),)).source.pure
+@test which(fpure, ()).pure
+@test which(fpure, (typeof(pi),)).pure
+@test !which(gpure, ()).pure
+@test !which(gpure, (typeof(pi),)).pure
 @test @code_typed(gpure())[1].pure
 @test @code_typed(gpure(π))[1].pure
 @test gpure() == gpure() == gpure()
@@ -422,7 +423,7 @@ gpure(x::Irrational) = fpure(x)
 
 # Make sure @pure works for functions using the new syntax
 Base.@pure (fpure2(x::T) where T) = T
-@test which(fpure2, (Int64,)).source.pure
+@test which(fpure2, (Int64,)).pure
 
 # issue #10880
 function cat10880(a, b)
@@ -611,7 +612,7 @@ function i20343()
     f20343([1,2,3]..., 4)
 end
 @test Base.return_types(i20343, ()) == [Int8]
-immutable Foo20518 <: AbstractVector{Int}; end # issue #20518; inference assumed AbstractArrays
+struct Foo20518 <: AbstractVector{Int}; end # issue #20518; inference assumed AbstractArrays
 Base.getindex(::Foo20518, ::Int) = "oops"      # not to lie about their element type
 Base.indices(::Foo20518) = (Base.OneTo(4),)
 foo20518(xs::Any...) = -1
@@ -655,6 +656,10 @@ let A = 1:2, z = zip(A, A, A, A, A, A, A, A, A, A, A, A)
     @test z isa Core.Inference.limit_type_depth(typeof(z), 0)
     @test start(z) == (1, (1, (1, (1, (1, (1, (1, (1, (1, (1, (1, 1)))))))))))
 end
+# introduce TypeVars in Unions in invariant position
+let T = Val{Val{Val{Union{Int8,Int16,Int32,Int64,UInt8,UInt16,UInt32,UInt64}}}}
+    @test T <: Core.Inference.limit_type_depth(T, 0)
+end
 
 # issue #20704
 f20704(::Int) = 1
@@ -684,3 +689,157 @@ Base.@pure function a20704(x)
 end
 aa20704(x) = x(nothing)
 @test code_typed(aa20704, (typeof(a20704),))[1][1].pure
+
+#issue #21065, elision of _apply when splatted expression is not effect_free
+function f21065(x,y)
+    println("x=$x, y=$y")
+    return x, y
+end
+g21065(x,y) = +(f21065(x,y)...)
+function test_no_apply(expr::Expr)
+    return all(test_no_apply, expr.args)
+end
+function test_no_apply(ref::GlobalRef)
+    return ref.mod != Core || ref.name !== :_apply
+end
+test_no_apply(::Any) = true
+@test all(test_no_apply, code_typed(g21065, Tuple{Int,Int})[1].first.code)
+
+# issue #20033
+# check return_type_tfunc for calls where no method matches
+bcast_eltype_20033(f, A) = Core.Inference.return_type(f, Tuple{eltype(A)})
+err20033(x::Float64...) = prod(x)
+@test bcast_eltype_20033(err20033, [1]) === Union{}
+@test Base.return_types(bcast_eltype_20033, (typeof(err20033), Vector{Int},)) == Any[Type{Union{}}]
+# return_type on builtins
+@test Core.Inference.return_type(tuple, Tuple{Int,Int8,Int}) === Tuple{Int,Int8,Int}
+
+# issue #21088
+@test Core.Inference.return_type(typeof, Tuple{Int}) == Type{Int}
+
+# Inference of constant svecs
+@eval fsvecinf() = $(QuoteNode(Core.svec(Tuple{Int,Int}, Int)))[1]
+@test Core.Inference.return_type(fsvecinf, Tuple{}) == Type{Tuple{Int,Int}}
+
+# nfields tfunc on `DataType`
+let f = ()->Val{nfields(DataType[Int][1])}
+    @test f() == Val{0}
+end
+
+# inference on invalid getfield call
+@eval _getfield_with_string_() = getfield($(1=>2), "")
+@test Base.return_types(_getfield_with_string_, ()) == Any[Union{}]
+
+# inference AST of a constant return value
+f21175() = 902221
+@test code_typed(f21175, ())[1].second === Int
+# call again, so that the AST is built on-demand
+let e = code_typed(f21175, ())[1].first.code[1]::Expr
+    @test e.head === :return
+    @test e.args[1] ∈ (902221, Core.QuoteNode(902221))
+end
+
+# issue #10207
+mutable struct T10207{A, B}
+    a::A
+    b::B
+end
+@test code_typed(T10207, (Int,Any))[1].second == T10207{Int,T} where T
+
+# issue #21410
+f21410(::V, ::Pair{V,E}) where {V, E} = E
+@test code_typed(f21410, Tuple{Ref, Pair{Ref{T},Ref{T}} where T<:Number})[1].second == Type{Ref{T}} where T<:Number
+
+# issue #21369
+function inf_error_21369(arg)
+    if arg
+        # invalid instantiation, causing throw during inference
+        Complex{String}
+    end
+end
+function break_21369()
+    try
+        error("uhoh")
+    catch
+        eval(:(inf_error_21369(false)))
+        bt = catch_backtrace()
+        i = 1
+        local fr
+        while true
+            fr = Base.StackTraces.lookup(bt[i])[end]
+            if !fr.from_c
+                break
+            end
+            i += 1
+        end
+        @test fr.func === :break_21369
+        rethrow()
+    end
+end
+@test_throws ErrorException break_21369()  # not TypeError
+
+# issue #17003
+abstract type AArray_17003{T,N} end
+AVector_17003{T} = AArray_17003{T,1}
+
+struct Nable_17003{T}
+end
+
+struct NArray_17003{T,N} <: AArray_17003{Nable_17003{T},N}
+end
+
+(::Type{NArray_17003}){T,N}(::Array{T,N}) = NArray_17003{T,N}()
+
+gl_17003 = [1, 2, 3]
+
+f2_17003(item::AVector_17003) = nothing
+f2_17003(::Any) = f2_17003(NArray_17003(gl_17003))
+
+@test f2_17003(1) == nothing
+
+# issue #20847
+function segfaultfunction_20847{N, T}(A::Vector{NTuple{N, T}})
+    B = reinterpret(T, A, (N, length(A)))
+    return nothing
+end
+
+tuplevec_20847 = Tuple{Float64, Float64}[(0.0,0.0), (1.0,0.0)]
+
+for A in (1,)
+    @test segfaultfunction_20847(tuplevec_20847) == nothing
+end
+
+# issue #21848
+@test Core.Inference.limit_type_depth(Ref{Complex{T} where T}, Core.Inference.MAX_TYPE_DEPTH) == Ref
+let T = Tuple{Tuple{Int64, Void},
+              Tuple{Tuple{Int64, Void},
+                    Tuple{Int64, Tuple{Tuple{Int64, Void},
+                                       Tuple{Tuple{Int64, Void}, Tuple{Int64, Tuple{Tuple{Int64, Void}, Tuple{Tuple, Tuple}}}}}}}}
+    @test Core.Inference.limit_type_depth(T, 0) >: T
+    @test Core.Inference.limit_type_depth(T, 1) >: T
+    @test Core.Inference.limit_type_depth(T, 2) >: T
+end
+
+# Issue #20902, check that this doesn't error.
+@generated function test_20902()
+    quote
+        10 + 11
+    end
+end
+@test length(code_typed(test_20902, (), optimize = false)) == 1
+@test length(code_typed(test_20902, (), optimize = false)) == 1
+
+# normalization of arguments with constant Types as parameters
+g21771(T) = T
+f21771(::Val{U}) where {U} = Tuple{g21771(U)}
+@test @inferred(f21771(Val{Int}())) === Tuple{Int}
+@test @inferred(f21771(Val{Union{}}())) === Tuple{Union{}}
+@test @inferred(f21771(Val{Integer}())) === Tuple{Integer}
+
+# missing method should be inferred as Union{}, ref https://github.com/JuliaLang/julia/issues/20033#issuecomment-282228948
+@test Base.return_types(f -> f(1), (typeof((x::String) -> x),)) == Any[Union{}]
+
+# issue #21653
+# ensure that we don't try to resolve cycles using uncached edges
+f21653() = f21653()
+@test code_typed(f21653, Tuple{}, optimize=false)[1] isa Pair{CodeInfo, typeof(Union{})}

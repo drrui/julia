@@ -1,4 +1,4 @@
-# This file is a part of Julia. License is MIT: http://julialang.org/license
+# This file is a part of Julia. License is MIT: https://julialang.org/license
 
 # ranges
 @test size(10:1:0) == (0,)
@@ -25,6 +25,7 @@ L64 = @inferred(linspace(Int64(1), Int64(4), 4))
 @test L32[2] == 2 && L64[2] == 2
 @test L32[3] == 3 && L64[3] == 3
 @test L32[4] == 4 && L64[4] == 4
+@test @inferred(linspace(1.0, 2.0, 2.0f0)) === linspace(1.0, 2.0, 2)
 
 r = 5:-1:1
 @test r[1]==5
@@ -893,6 +894,14 @@ let r = linspace(1.0, 3+im, 4)
     @test r[3] ≈ (7/3)+(2/3)im
     @test r[4] === 3.0+im
 end
+
+# ambiguity between colon methods (#20988)
+struct NotReal; val; end
+Base.:+(x, y::NotReal) = x + y.val
+Base.zero(y::NotReal) = zero(y.val)
+Base.rem(x, y::NotReal) = rem(x, y.val)
+Base.isless(x, y::NotReal) = isless(x, y.val)
+@test colon(1, NotReal(1), 5) isa StepRange{Int,NotReal}
 
 # dimensional correctness:
 isdefined(Main, :TestHelpers) || @eval Main include("TestHelpers.jl")

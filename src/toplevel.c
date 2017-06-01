@@ -1,4 +1,4 @@
-// This file is a part of Julia. License is MIT: http://julialang.org/license
+// This file is a part of Julia. License is MIT: https://julialang.org/license
 
 /*
   evaluating top-level expressions, loading source files
@@ -54,8 +54,10 @@ JL_DLLEXPORT jl_module_t *jl_new_main_module(void)
 
     jl_main_module = jl_new_module(jl_symbol("Main"));
     jl_main_module->parent = jl_main_module;
-    if (old_main) // don't block continued loading of incremental caches
+    if (old_main) { // don't block continued loading of incremental caches
+        jl_main_module->primary_world = old_main->primary_world;
         jl_main_module->uuid = old_main->uuid;
+    }
     ptls->current_module = jl_main_module;
 
     jl_core_module->parent = jl_main_module;
@@ -461,8 +463,6 @@ static jl_method_instance_t *jl_new_thunk(jl_code_info_t *src, jl_module_t *modu
 jl_value_t *jl_toplevel_eval_flex(jl_value_t *e, int fast, int expanded)
 {
     jl_ptls_t ptls = jl_get_ptls_states();
-    //jl_show(ex);
-    //jl_printf(JL_STDOUT, "\n");
     if (!jl_is_expr(e)) {
         if (jl_is_linenode(e)) {
             jl_lineno = jl_linenode_line(e);

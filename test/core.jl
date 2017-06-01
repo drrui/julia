@@ -1,10 +1,10 @@
-# This file is a part of Julia. License is MIT: http://julialang.org/license
+# This file is a part of Julia. License is MIT: https://julialang.org/license
 
 # test core language features
 const Bottom = Union{}
-const curmod = current_module()
-const curmod_name = fullname(curmod)
-const curmod_prefix = "$(["$m." for m in curmod_name]...)"
+
+# For curmod_*
+include("testenv.jl")
 
 f47{T}(x::Vector{Vector{T}}) = 0
 @test_throws MethodError f47(Array{Vector}(0))
@@ -21,7 +21,13 @@ f47{T}(x::Vector{Vector{T}}) = 0
 @test_throws TypeError (Array{T} where T<:Vararg{Int,2})
 
 # issue #8652
-args_morespecific(a, b) = ccall(:jl_type_morespecific, Cint, (Any,Any), a, b) != 0
+function args_morespecific(a, b)
+    sp = (ccall(:jl_type_morespecific, Cint, (Any,Any), a, b) != 0)
+    if sp  # make sure morespecific(a,b) implies !morespecific(b,a)
+        @test ccall(:jl_type_morespecific, Cint, (Any,Any), b, a) == 0
+    end
+    return sp
+end
 let
     a  = Tuple{Type{T1}, T1} where T1<:Integer
     b2 = Tuple{Type{T2}, Integer} where T2<:Integer
@@ -65,12 +71,48 @@ _z_z_z_(::Int, c...) = 3
 
 @test args_morespecific(Tuple{1,T} where T, Tuple{Any})
 
+# issue #21016
+@test args_morespecific(Tuple{IO, Core.TypeofBottom}, Tuple{IO, Type{T}} where T<:Number)
+
+# issue #21382
+@test args_morespecific(Tuple{Type{Pair{A,B} where B}} where A, Tuple{DataType})
+@test args_morespecific(Tuple{Union{Int,String},Type{Pair{A,B} where B}} where A, Tuple{Integer,UnionAll})
+
+# PR #21750
+let A = Tuple{Any, Tuple{Vararg{Integer,N} where N}},
+    B = Tuple{Any, Tuple{Any}},
+    C = Tuple{Any, Tuple{}}
+    @test args_morespecific(A, B)
+    @test args_morespecific(C, A)
+    @test args_morespecific(C, B)
+end
+
 # with bound varargs
 
 _bound_vararg_specificity_1{T,N}(::Type{Array{T,N}}, d::Vararg{Int, N}) = 0
 _bound_vararg_specificity_1{T}(::Type{Array{T,1}}, d::Int) = 1
 @test _bound_vararg_specificity_1(Array{Int,1}, 1) == 1
 @test _bound_vararg_specificity_1(Array{Int,2}, 1, 1) == 0
+
+# issue #21710
+@test args_morespecific(Tuple{Array}, Tuple{AbstractVector})
+@test args_morespecific(Tuple{Matrix}, Tuple{AbstractVector})
+
+# issue #12939
+module Issue12939
+abstract type Abs; end
+struct Foo <: Abs; end
+struct Bar; val::Int64; end
+struct Baz; val::Int64; end
+f{T}(::Type{T}, x::T) = T(3)
+f{T <: Abs}(::Type{Bar}, x::T) = Bar(2)
+f(::Type{Bar}, x) = Bar(1)
+f(::Type{Baz}, x) = Baz(1)
+f{T <: Abs}(::Type{Baz}, x::T) = Baz(2)
+end
+
+@test Issue12939.f(Issue12939.Baz,Issue12939.Foo()) === Issue12939.Baz(2)
+@test Issue12939.f(Issue12939.Bar,Issue12939.Foo()) === Issue12939.Bar(2)
 
 # issue #11840
 TT11840{T} = Tuple{T,T}
@@ -172,6 +214,8 @@ nttest1{n}(x::NTuple{n,Int}) = n
 
 # #17198
 @test_throws MethodError convert(Tuple{Int}, (1.0, 2.0, 3.0))
+# #21238
+@test_throws MethodError convert(Tuple{Int,Int,Int}, (1, 2))
 
 # type declarations
 
@@ -200,6 +244,16 @@ mutable struct Circ_{T} x::Circ_{T} end
 abstract type Sup2a_ end
 abstract type Sup2b_{A <: Sup2a_, B} <: Sup2a_ end
 @test_throws ErrorException @eval abstract type Qux2_{T} <: Sup2b_{Qux2_{Int}, T} end # wrapped in eval to avoid #16793
+
+# issue #21923
+struct A21923{T,N}; v::Vector{A21923{T}}; end
+@test fieldtype(A21923,1) == Vector{A21923{T}} where T
+struct B21923{T,N}; v::Vector{B21923{T,M} where M}; end
+@test fieldtype(B21923, 1) == Vector{B21923{T,M} where M} where T
+struct C21923{T,N}; v::C21923{T,M} where M; end
+@test fieldtype(C21923, 1) == C21923
+struct D21923{T,N}; v::D21923{T}; end
+@test fieldtype(D21923, 1) == D21923
 
 # issue #3890
 mutable struct A3890{T1}
@@ -384,16 +438,27 @@ glotest()
 @test loc_x == 10
 
 # issue #7234
+f7234_cnt = 0
 begin
     glob_x2 = 24
-    f7234_a() = (glob_x2 += 1)
+    function f7234_a()
+        global f7234_cnt += 1
+        glob_x2 += 1
+        global f7234_cnt += -10000
+    end
 end
 @test_throws UndefVarError f7234_a()
+@test f7234_cnt == 1
 begin
     global glob_x2 = 24
-    f7234_b() = (glob_x2 += 1)
+    function f7234_b()
+        global f7234_cnt += 1
+        glob_x2 += 1
+        global f7235_cnt += -10000
+    end
 end
 @test_throws UndefVarError f7234_b()
+@test f7234_cnt == 2
 # existing globals can be inherited by non-function blocks
 for i = 1:2
     glob_x2 += 1
@@ -432,16 +497,23 @@ end
 @test h19333() == 4
 
 # let - new variables, including undefinedness
+let_undef_cnt = 0
 function let_undef()
     first = true
     for i = 1:2
-        let x
-            if first; x=1; first=false; end
-            x+1
+        let x # new x
+            if first # not defined on second pass
+                x = 1
+                first = false
+            end
+            global let_undef_cnt += 1
+            x + 1
+            global let_undef_cnt += 23
         end
     end
 end
 @test_throws UndefVarError let_undef()
+@test let_undef_cnt == 25
 
 # const implies local in a local scope block
 function const_implies_local()
@@ -466,6 +538,71 @@ end
 @test a[1](10) == 11
 @test a[2](10) == 12
 @test a[3](10) == 13
+
+# issue #22032
+let a = [], fs = []
+    for f() in 1:3
+        push!(a, f())
+        push!(fs, f)
+    end
+    @test a == [1,2,3]
+    @test [f() for f in fs] == [1,2,3]
+end
+let t = (22,33)
+    (g(), x) = t
+    @test g() == 22
+    @test x == 33
+end
+
+# issue #21900
+f21900_cnt = 0
+function f21900()
+    for i = 1:1
+        x = 0
+    end
+    global f21900_cnt += 1
+    x
+    global f21900_cnt += -1000
+    nothing
+end
+@test_throws UndefVarError f21900()
+@test f21900_cnt == 1
+
+@test_throws UndefVarError @eval begin
+    for i21900 = 1:10
+        for j21900 = 1:10
+            foo21900 = 10
+        end
+        bar21900 = 0
+        bar21900 = foo21900 + 1
+    end
+end
+@test !isdefined(:foo21900)
+@test !isdefined(:bar21900)
+bar21900 = 0
+@test_throws UndefVarError @eval begin
+    for i21900 = 1:10
+        for j21900 = 1:10
+            foo21900 = 10
+        end
+        bar21900 = -1
+        bar21900 = foo21900 + 1
+    end
+end
+@test bar21900 == -1
+@test !isdefined(:foo21900)
+foo21900 = 0
+@test nothing === @eval begin
+    for i21900 = 1:10
+        for j21900 = 1:10
+            foo21900 = 10
+        end
+        bar21900 = -1
+        bar21900 = foo21900 + 1
+    end
+end
+@test foo21900 == 10
+@test bar21900 == 11
 
 # ? syntax
 @test (true ? 1 : false ? 2 : 3) == 1
@@ -908,7 +1045,15 @@ let
     @test aa == a
     aa = unsafe_wrap(Array, pointer(a), UInt16(length(a)))
     @test aa == a
+    aaa = unsafe_wrap(Array, pointer(a), (1, 1))
+    @test size(aaa) == (1, 1)
+    @test aaa[1] == a[1]
     @test_throws InexactError unsafe_wrap(Array, pointer(a), -3)
+    # Misaligned pointer
+    res = @test_throws ArgumentError unsafe_wrap(Array, pointer(a) + 1, length(a))
+    @test contains(res.value.msg, "is not properly aligned to $(sizeof(Int)) bytes")
+    res = @test_throws ArgumentError unsafe_wrap(Array, pointer(a) + 1, (1, 1))
+    @test contains(res.value.msg, "is not properly aligned to $(sizeof(Int)) bytes")
 end
 
 struct FooBar2515
@@ -4658,11 +4803,11 @@ end # module SOE
 @test_nowarn begin
     local p15240
     p15240 = ccall(:jl_realloc, Ptr{Void}, (Ptr{Void}, Csize_t), C_NULL, 10)
-    ccall(:jl_free, Void, (Ptr{Void}, ), p15240)
+    ccall(:jl_free, Void, (Ptr{Void},), p15240)
 end
 
 # issue #19963
-@test_nowarn ccall(:jl_free, Void, (Ptr{Void}, ), C_NULL)
+@test_nowarn ccall(:jl_free, Void, (Ptr{Void},), C_NULL)
 
 # Wrong string size on 64bits for large string.
 if Sys.WORD_SIZE == 64
@@ -4755,3 +4900,198 @@ end
     x::Vector{S}
     y::Vector{T}
 end
+
+# issue #20999, allow more type redefinitions
+struct T20999
+    x::Array{T} where T<:Real
+end
+
+struct T20999
+    x::Array{T} where T<:Real
+end
+
+@test_throws ErrorException struct T20999
+    x::Array{T} where T<:Integer
+end
+
+let a = Array{Core.TypeofBottom, 1}(2)
+    @test a[1] == Union{}
+    @test a == [Union{}, Union{}]
+end
+
+# issue #21178
+struct F21178{A,B} end
+b21178(::F1,::F2) where {B1,B2,F1<:F21178{B1,<:Any},F2<:F21178{B2}} = F1,F2,B1,B2
+@test b21178(F21178{1,2}(),F21178{1,2}()) == (F21178{1,2}, F21178{1,2}, 1, 1)
+
+# issue #21172
+a21172 = f21172(x) = 2x
+@test f21172(8) == 16
+@test a21172 === f21172
+
+# issue #21271
+f21271() = convert(Tuple{Type{Int}, Type{Float64}}, (Int, Float64))::Tuple{Type{Int}, Type{Float64}}
+f21271(x) = x::Tuple{Type{Int}, Type{Float64}}
+@test_throws TypeError f21271()
+@test_throws TypeError f21271((Int, Float64))
+
+# issue #21397
+bar21397(x::T) where {T} = T
+foo21397(x) = bar21397(x)
+@test foo21397(Tuple) == DataType
+
+# issue 21216
+primitive type FP128test <: AbstractFloat 128 end
+struct FP128align <: AbstractFloat
+    i::Int # cause forced misalignment
+    fp::FP128test
+end
+let ni128 = sizeof(FP128test) ÷ sizeof(Int),
+    ns128 = sizeof(FP128align) ÷ sizeof(Int),
+    nbit = sizeof(Int) * 8,
+    arr = Vector{FP128align}(2),
+    offset = Base.datatype_alignment(FP128test) ÷ sizeof(Int),
+    little,
+    expected,
+    arrint = reinterpret(Int, arr)
+
+    @test length(arrint) == 2 * ns128
+    arrint .= 1:(2 * ns128)
+    @test sizeof(FP128test) == 16
+    @test arr[1].i == 1
+    @test arr[2].i == 1 + ns128
+    expected = UInt128(0)
+    for little in ni128:-1:1
+        little += offset
+        expected = (expected << nbit) + little
+    end
+    @test arr[1].fp == reinterpret(FP128test, expected)
+    expected = UInt128(0)
+    for little in ni128:-1:1
+        little += offset + ns128
+        expected = (expected << nbit) + little
+    end
+    @test reinterpret(UInt128, arr[2].fp) == expected
+end
+
+# issue #21516
+struct T21516
+    x::Vector{Float64}
+    y::Vector{Float64}
+    # check that this definition works
+    T21516(x::Vector{T}, y::Vector{T}) where {T<:Real} = new(float.(x), float.(y))
+end
+@test isa(T21516([1],[2]).x, Vector{Float64})
+
+# let with type declaration
+let letvar::Int = 2
+    letvar = 3.0
+    @test letvar === 3
+end
+
+# issue #21568
+f21568() = 0
+function foo21568()
+    y = 1
+    global f21568
+    f21568{T<:Real}(x::AbstractArray{T,1}) = y
+end
+foo21568()
+@test f21568([0]) == 1
+
+# issue #21719
+mutable struct T21719{V}
+    f
+    tol::Float64
+    goal::V
+end
+g21719(f, goal; tol = 1e-6) = T21719(f, tol, goal)
+@test isa(g21719(identity, 1.0; tol=0.1), T21719)
+
+# reinterpret alignment requirement
+let arr8 = zeros(UInt8, 16),
+    arr64 = zeros(UInt64, 2),
+    arr64_8 = reinterpret(UInt8, arr64),
+    arr64_i
+
+    # Not allowed to reinterpret arrays allocated as UInt8 array to a Int32 array
+    res = @test_throws ArgumentError reinterpret(Int32, arr8)
+    @test res.value.msg == "reinterpret from alignment 1 bytes to alignment 4 bytes not allowed"
+    # OK to reinterpret arrays allocated as UInt64 array to a Int64 array even though
+    # it is passed as a UInt8 array
+    arr64_i = reinterpret(Int64, arr64_8)
+    @test arr8 == arr64_8
+    arr64_i[2] = 1234
+    @test arr64[2] == 1234
+end
+
+# Alignment of perm boxes
+for i in 1:10
+    # Int64 box should be 16bytes aligned even on 32bits
+    ptr1 = ccall(:jl_box_int64, UInt, (Int64,), i)
+    ptr2 = ccall(:jl_box_int64, UInt, (Int64,), i)
+    @test ptr1 === ptr2
+    @test ptr1 % 16 == 0
+end
+
+# issue #21581
+global function f21581()::Int
+    return 2.0
+end
+@test f21581() === 2
+global g21581()::Int = 2.0
+@test g21581() === 2
+module M21581
+macro bar()
+    :(foo21581(x)::Int = x)
+end
+M21581.@bar
+end
+@test M21581.foo21581(1) === 1
+
+module N21581
+macro foo(var)
+    quote
+        function f(x::T = 1) where T
+            ($(esc(var)), x)
+        end
+        f()
+    end
+end
+end
+let x = 8
+    @test @N21581.foo(x) === (8, 1)
+end
+
+# issue #22122
+let
+    global @inline function f22122(x::T) where {T}
+        T
+    end
+end
+@test f22122(1) === Int
+
+# issue #22026
+module M22026
+
+macro foo(TYP)
+    quote
+        global foofunction
+        foofunction(x::Type{T}) where {T<:Number} = x
+    end
+end
+struct Foo end
+@foo Foo
+
+macro foo2()
+    quote
+        global foofunction2
+        (foofunction2(x::T)::Float32) where {T<:Number} = 2x
+    end
+end
+
+@foo2
+
+end
+@test M22026.foofunction(Int16) === Int16
+@test M22026.foofunction2(3) === 6.0f0
