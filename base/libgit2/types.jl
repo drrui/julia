@@ -548,7 +548,7 @@ for (typ, owntyp, sup, cname) in [
     (:GitReference,      :GitRepo,              :AbstractGitObject, :git_reference),
     (:GitDescribeResult, :GitRepo,              :AbstractGitObject, :git_describe_result),
     (:GitDiff,           :GitRepo,              :AbstractGitObject, :git_diff),
-    (:GitDiffStats,      nothing,               :AbstractGitObject, :git_diff_stats),
+    (:GitDiffStats,      :GitRepo,               :AbstractGitObject, :git_diff_stats),
     (:GitAnnotated,      :GitRepo,              :AbstractGitObject, :git_annotated_commit),
     (:GitRebase,         :GitRepo,              :AbstractGitObject, :git_rebase),
     (:GitStatus,         :GitRepo,              :AbstractGitObject, :git_status_list),
