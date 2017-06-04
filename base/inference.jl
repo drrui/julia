@@ -357,17 +357,22 @@ isconstType(t::ANY) = isType(t) && (isleaftype(t.parameters[1]) || t.parameters[
 const IInf = typemax(Int) # integer infinity
 const n_ifunc = reinterpret(Int32,arraylen)+1
 const t_ifunc = Array{Tuple{Int,Int,Any},1}(n_ifunc)
+const t_ifunc_cost = Array{Int,1}(n_ifunc)
 const t_ffunc_key = Array{Function,1}(0)
 const t_ffunc_val = Array{Tuple{Int,Int,Any},1}(0)
-function add_tfunc(f::IntrinsicFunction, minarg::Int, maxarg::Int, tfunc::ANY)
-    t_ifunc[reinterpret(Int32,f)+1] = (minarg, maxarg, tfunc)
+const t_ffunc_cost = Array{Int,1}(0)
+function add_tfunc(f::IntrinsicFunction, minarg::Int, maxarg::Int, tfunc::ANY, cost::Int)
+    idx = reinterpret(Int32,f)+1
+    t_ifunc[idx] = (minarg, maxarg, tfunc)
+    t_ifunc_cost[idx] = cost
 end
-function add_tfunc(f::Function, minarg::Int, maxarg::Int, tfunc::ANY)
+function add_tfunc(f::Function, minarg::Int, maxarg::Int, tfunc::ANY, cost::Int)
     push!(t_ffunc_key, f)
     push!(t_ffunc_val, (minarg, maxarg, tfunc))
+    push!(t_ffunc_cost, cost)
 end
 
-add_tfunc(throw, 1, 1, (x::ANY) -> Bottom)
+add_tfunc(throw, 1, 1, (x::ANY) -> Bottom, 0)
 
 # the inverse of typeof_tfunc
 function instanceof_tfunc(t::ANY)
@@ -410,104 +415,103 @@ function fptosi_tfunc(x::ANY)
 end
 
     ## conversion ##
-add_tfunc(bitcast, 2, 2, bitcast_tfunc)
-add_tfunc(sext_int, 2, 2, bitcast_tfunc)
-add_tfunc(zext_int, 2, 2, bitcast_tfunc)
-add_tfunc(trunc_int, 2, 2, bitcast_tfunc)
-add_tfunc(fptoui, 1, 2, fptoui_tfunc)
-add_tfunc(fptosi, 1, 2, fptosi_tfunc)
-add_tfunc(uitofp, 2, 2, bitcast_tfunc)
-add_tfunc(sitofp, 2, 2, bitcast_tfunc)
-add_tfunc(fptrunc, 2, 2, bitcast_tfunc)
-add_tfunc(fpext, 2, 2, bitcast_tfunc)
+add_tfunc(bitcast, 2, 2, bitcast_tfunc, 1)
+add_tfunc(sext_int, 2, 2, bitcast_tfunc, 1)
+add_tfunc(zext_int, 2, 2, bitcast_tfunc, 1)
+add_tfunc(trunc_int, 2, 2, bitcast_tfunc, 1)
+add_tfunc(fptoui, 1, 2, fptoui_tfunc, 1)
+add_tfunc(fptosi, 1, 2, fptosi_tfunc, 1)
+add_tfunc(uitofp, 2, 2, bitcast_tfunc, 1)
+add_tfunc(sitofp, 2, 2, bitcast_tfunc, 1)
+add_tfunc(fptrunc, 2, 2, bitcast_tfunc, 1)
+add_tfunc(fpext, 2, 2, bitcast_tfunc, 1)
     ## checked conversion ##
-add_tfunc(checked_trunc_sint, 2, 2, bitcast_tfunc)
-add_tfunc(checked_trunc_uint, 2, 2, bitcast_tfunc)
-add_tfunc(check_top_bit, 1, 1, math_tfunc)
+add_tfunc(checked_trunc_sint, 2, 2, bitcast_tfunc, 3)
+add_tfunc(checked_trunc_uint, 2, 2, bitcast_tfunc, 3)
+add_tfunc(check_top_bit, 1, 1, math_tfunc, 2)
     ## arithmetic ##
-add_tfunc(neg_int, 1, 1, math_tfunc)
-add_tfunc(add_int, 2, 2, math_tfunc)
-add_tfunc(sub_int, 2, 2, math_tfunc)
-add_tfunc(mul_int, 2, 2, math_tfunc)
-add_tfunc(sdiv_int, 2, 2, math_tfunc)
-add_tfunc(udiv_int, 2, 2, math_tfunc)
-add_tfunc(srem_int, 2, 2, math_tfunc)
-add_tfunc(urem_int, 2, 2, math_tfunc)
-add_tfunc(neg_float, 1, 1, math_tfunc)
-add_tfunc(add_float, 2, 2, math_tfunc)
-add_tfunc(sub_float, 2, 2, math_tfunc)
-add_tfunc(mul_float, 2, 2, math_tfunc)
-add_tfunc(div_float, 2, 2, math_tfunc)
-add_tfunc(rem_float, 2, 2, math_tfunc)
-add_tfunc(fma_float, 3, 3, math_tfunc)
-add_tfunc(muladd_float, 3, 3, math_tfunc)
+add_tfunc(neg_int, 1, 1, math_tfunc, 1)
+add_tfunc(add_int, 2, 2, math_tfunc, 1)
+add_tfunc(sub_int, 2, 2, math_tfunc, 1)
+add_tfunc(mul_int, 2, 2, math_tfunc, 4)
+add_tfunc(sdiv_int, 2, 2, math_tfunc, 30)
+add_tfunc(udiv_int, 2, 2, math_tfunc, 30)
+add_tfunc(srem_int, 2, 2, math_tfunc, 30)
+add_tfunc(urem_int, 2, 2, math_tfunc, 30)
+add_tfunc(neg_float, 1, 1, math_tfunc, 1)
+add_tfunc(add_float, 2, 2, math_tfunc, 1)
+add_tfunc(sub_float, 2, 2, math_tfunc, 1)
+add_tfunc(mul_float, 2, 2, math_tfunc, 4)
+add_tfunc(div_float, 2, 2, math_tfunc, 20)
+add_tfunc(rem_float, 2, 2, math_tfunc, 20)
+add_tfunc(fma_float, 3, 3, math_tfunc, 5)
+add_tfunc(muladd_float, 3, 3, math_tfunc, 5)
     ## fast arithmetic ##
-add_tfunc(neg_float_fast, 1, 1, math_tfunc)
-add_tfunc(add_float_fast, 2, 2, math_tfunc)
-add_tfunc(sub_float_fast, 2, 2, math_tfunc)
-add_tfunc(mul_float_fast, 2, 2, math_tfunc)
-add_tfunc(div_float_fast, 2, 2, math_tfunc)
-add_tfunc(rem_float_fast, 2, 2, math_tfunc)
+add_tfunc(neg_float_fast, 1, 1, math_tfunc, 1)
+add_tfunc(add_float_fast, 2, 2, math_tfunc, 1)
+add_tfunc(sub_float_fast, 2, 2, math_tfunc, 1)
+add_tfunc(mul_float_fast, 2, 2, math_tfunc, 2)
+add_tfunc(div_float_fast, 2, 2, math_tfunc, 10)
+add_tfunc(rem_float_fast, 2, 2, math_tfunc, 10)
     ## bitwise operators ##
-add_tfunc(and_int, 2, 2, math_tfunc)
-add_tfunc(or_int, 2, 2, math_tfunc)
-add_tfunc(xor_int, 2, 2, math_tfunc)
-add_tfunc(not_int, 1, 1, math_tfunc)
-add_tfunc(shl_int, 2, 2, math_tfunc)
-add_tfunc(lshr_int, 2, 2, math_tfunc)
-add_tfunc(ashr_int, 2, 2, math_tfunc)
-add_tfunc(bswap_int, 1, 1, math_tfunc)
-add_tfunc(ctpop_int, 1, 1, math_tfunc)
-add_tfunc(ctlz_int, 1, 1, math_tfunc)
-add_tfunc(cttz_int, 1, 1, math_tfunc)
-add_tfunc(checked_sdiv_int, 2, 2, math_tfunc)
-add_tfunc(checked_udiv_int, 2, 2, math_tfunc)
-add_tfunc(checked_srem_int, 2, 2, math_tfunc)
-add_tfunc(checked_urem_int, 2, 2, math_tfunc)
+add_tfunc(and_int, 2, 2, math_tfunc, 1)
+add_tfunc(or_int, 2, 2, math_tfunc, 1)
+add_tfunc(xor_int, 2, 2, math_tfunc, 1)
+add_tfunc(not_int, 1, 1, math_tfunc, 1)
+add_tfunc(shl_int, 2, 2, math_tfunc, 1)
+add_tfunc(lshr_int, 2, 2, math_tfunc, 1)
+add_tfunc(ashr_int, 2, 2, math_tfunc, 1)
+add_tfunc(bswap_int, 1, 1, math_tfunc, 1)
+add_tfunc(ctpop_int, 1, 1, math_tfunc, 1)
+add_tfunc(ctlz_int, 1, 1, math_tfunc, 1)
+add_tfunc(cttz_int, 1, 1, math_tfunc, 1)
+add_tfunc(checked_sdiv_int, 2, 2, math_tfunc, 40)
+add_tfunc(checked_udiv_int, 2, 2, math_tfunc, 40)
+add_tfunc(checked_srem_int, 2, 2, math_tfunc, 40)
+add_tfunc(checked_urem_int, 2, 2, math_tfunc, 40)
     ## functions ##
-add_tfunc(abs_float, 1, 1, math_tfunc)
-add_tfunc(copysign_float, 2, 2, math_tfunc)
-add_tfunc(flipsign_int, 2, 2, math_tfunc)
-add_tfunc(ceil_llvm, 1, 1, math_tfunc)
-add_tfunc(floor_llvm, 1, 1, math_tfunc)
-add_tfunc(trunc_llvm, 1, 1, math_tfunc)
-add_tfunc(rint_llvm, 1, 1, math_tfunc)
-add_tfunc(sqrt_llvm, 1, 1, math_tfunc)
-add_tfunc(sqrt_llvm_fast, 1, 1, math_tfunc)
+add_tfunc(abs_float, 1, 1, math_tfunc, 5)
+add_tfunc(copysign_float, 2, 2, math_tfunc, 5)
+add_tfunc(flipsign_int, 2, 2, math_tfunc, 1)
+add_tfunc(ceil_llvm, 1, 1, math_tfunc, 10)
+add_tfunc(floor_llvm, 1, 1, math_tfunc, 10)
+add_tfunc(trunc_llvm, 1, 1, math_tfunc, 10)
+add_tfunc(rint_llvm, 1, 1, math_tfunc, 10)
+add_tfunc(sqrt_llvm, 1, 1, math_tfunc, 20)
     ## same-type comparisons ##
 cmp_tfunc(x::ANY, y::ANY) = Bool
-add_tfunc(eq_int, 2, 2, cmp_tfunc)
-add_tfunc(ne_int, 2, 2, cmp_tfunc)
-add_tfunc(slt_int, 2, 2, cmp_tfunc)
-add_tfunc(ult_int, 2, 2, cmp_tfunc)
-add_tfunc(sle_int, 2, 2, cmp_tfunc)
-add_tfunc(ule_int, 2, 2, cmp_tfunc)
-add_tfunc(eq_float, 2, 2, cmp_tfunc)
-add_tfunc(ne_float, 2, 2, cmp_tfunc)
-add_tfunc(lt_float, 2, 2, cmp_tfunc)
-add_tfunc(le_float, 2, 2, cmp_tfunc)
-add_tfunc(fpiseq, 2, 2, cmp_tfunc)
-add_tfunc(fpislt, 2, 2, cmp_tfunc)
-add_tfunc(eq_float_fast, 2, 2, cmp_tfunc)
-add_tfunc(ne_float_fast, 2, 2, cmp_tfunc)
-add_tfunc(lt_float_fast, 2, 2, cmp_tfunc)
-add_tfunc(le_float_fast, 2, 2, cmp_tfunc)
+add_tfunc(eq_int, 2, 2, cmp_tfunc, 1)
+add_tfunc(ne_int, 2, 2, cmp_tfunc, 1)
+add_tfunc(slt_int, 2, 2, cmp_tfunc, 1)
+add_tfunc(ult_int, 2, 2, cmp_tfunc, 1)
+add_tfunc(sle_int, 2, 2, cmp_tfunc, 1)
+add_tfunc(ule_int, 2, 2, cmp_tfunc, 1)
+add_tfunc(eq_float, 2, 2, cmp_tfunc, 2)
+add_tfunc(ne_float, 2, 2, cmp_tfunc, 2)
+add_tfunc(lt_float, 2, 2, cmp_tfunc, 2)
+add_tfunc(le_float, 2, 2, cmp_tfunc, 2)
+add_tfunc(fpiseq, 2, 2, cmp_tfunc, 1)
+add_tfunc(fpislt, 2, 2, cmp_tfunc, 1)
+add_tfunc(eq_float_fast, 2, 2, cmp_tfunc, 1)
+add_tfunc(ne_float_fast, 2, 2, cmp_tfunc, 1)
+add_tfunc(lt_float_fast, 2, 2, cmp_tfunc, 1)
+add_tfunc(le_float_fast, 2, 2, cmp_tfunc, 1)
 
     ## checked arithmetic ##
 chk_tfunc(x::ANY, y::ANY) = Tuple{widenconst(x), Bool}
-add_tfunc(checked_sadd_int, 2, 2, chk_tfunc)
-add_tfunc(checked_uadd_int, 2, 2, chk_tfunc)
-add_tfunc(checked_ssub_int, 2, 2, chk_tfunc)
-add_tfunc(checked_usub_int, 2, 2, chk_tfunc)
-add_tfunc(checked_smul_int, 2, 2, chk_tfunc)
-add_tfunc(checked_umul_int, 2, 2, chk_tfunc)
+add_tfunc(checked_sadd_int, 2, 2, chk_tfunc, 10)
+add_tfunc(checked_uadd_int, 2, 2, chk_tfunc, 10)
+add_tfunc(checked_ssub_int, 2, 2, chk_tfunc, 10)
+add_tfunc(checked_usub_int, 2, 2, chk_tfunc, 10)
+add_tfunc(checked_smul_int, 2, 2, chk_tfunc, 10)
+add_tfunc(checked_umul_int, 2, 2, chk_tfunc, 10)
     ## other, misc intrinsics ##
 add_tfunc(Core.Intrinsics.llvmcall, 3, IInf,
-    (fptr::ANY, rt::ANY, at::ANY, a...) -> instanceof_tfunc(rt))
+    (fptr::ANY, rt::ANY, at::ANY, a...) -> instanceof_tfunc(rt), 10)
 cglobal_tfunc(fptr::ANY) = Ptr{Void}
 cglobal_tfunc(fptr::ANY, t::ANY) = (isType(t) ? Ptr{t.parameters[1]} : Ptr)
 cglobal_tfunc(fptr::ANY, t::Const) = (isa(t.val, Type) ? Ptr{t.val} : Ptr)
-add_tfunc(Core.Intrinsics.cglobal, 1, 2, cglobal_tfunc)
+add_tfunc(Core.Intrinsics.cglobal, 1, 2, cglobal_tfunc, 100)
 add_tfunc(Core.Intrinsics.select_value, 3, 3,
     function (cnd::ANY, x::ANY, y::ANY)
         if isa(cnd, Const)
@@ -521,7 +525,7 @@ add_tfunc(Core.Intrinsics.select_value, 3, 3,
         end
         (Bool ⊑ cnd) || return Bottom
         return tmerge(x, y)
-    end)
+    end, 1)
 add_tfunc(===, 2, 2,
     function (x::ANY, y::ANY)
         if isa(x, Const) && isa(y, Const)
@@ -540,9 +544,9 @@ add_tfunc(===, 2, 2,
             x.val === true && return y
         end
         return Bool
-    end)
-add_tfunc(isdefined, 1, IInf, (args...)->Bool)
-add_tfunc(Core.sizeof, 1, 1, x->Int)
+    end, 1)
+add_tfunc(isdefined, 1, IInf, (args...)->Bool, 1)
+add_tfunc(Core.sizeof, 1, 1, x->Int, 0)
 add_tfunc(nfields, 1, 1,
     function (x::ANY)
         isa(x,Const) && return Const(nfields(x.val))
@@ -553,11 +557,11 @@ add_tfunc(nfields, 1, 1,
             return Const(length(x.types))
         end
         return Int
-    end)
-add_tfunc(Core._expr, 1, IInf, (args...)->Expr)
-add_tfunc(applicable, 1, IInf, (f::ANY, args...)->Bool)
-add_tfunc(Core.Intrinsics.arraylen, 1, 1, x->Int)
-add_tfunc(arraysize, 2, 2, (a::ANY, d::ANY)->Int)
+    end, 0)
+add_tfunc(Core._expr, 1, IInf, (args...)->Expr, 100)
+add_tfunc(applicable, 1, IInf, (f::ANY, args...)->Bool, 100)
+add_tfunc(Core.Intrinsics.arraylen, 1, 1, x->Int, 4)
+add_tfunc(arraysize, 2, 2, (a::ANY, d::ANY)->Int, 4)
 add_tfunc(pointerref, 3, 3,
           function (a::ANY, i::ANY, align::ANY)
               a = widenconst(a)
@@ -572,8 +576,8 @@ add_tfunc(pointerref, 3, 3,
                   end
               end
               return Any
-          end)
-add_tfunc(pointerset, 4, 4, (a::ANY, v::ANY, i::ANY, align::ANY) -> a)
+          end, 4)
+add_tfunc(pointerset, 4, 4, (a::ANY, v::ANY, i::ANY, align::ANY) -> a, 5)
 
 function typeof_tfunc(t::ANY)
     if isa(t, Const)
@@ -607,7 +611,7 @@ function typeof_tfunc(t::ANY)
         return DataType # typeof(anything)::DataType
     end
 end
-add_tfunc(typeof, 1, 1, typeof_tfunc)
+add_tfunc(typeof, 1, 1, typeof_tfunc, 0)
 add_tfunc(typeassert, 2, 2,
           function (v::ANY, t::ANY)
               t = instanceof_tfunc(t)
@@ -624,7 +628,7 @@ add_tfunc(typeassert, 2, 2,
                   return v
               end
               return typeintersect(v, t)
-          end)
+          end, 4)
 add_tfunc(isa, 2, 2,
           function (v::ANY, t::ANY)
               t = instanceof_tfunc(t)
@@ -637,7 +641,7 @@ add_tfunc(isa, 2, 2,
               end
               # TODO: handle non-leaftype(t) by testing against lower and upper bounds
               return Bool
-          end)
+          end, 0)
 add_tfunc(issubtype, 2, 2,
           function (a::ANY, b::ANY)
               if (isa(a,Const) || isType(a)) && (isa(b,Const) || isType(b))
@@ -648,7 +652,7 @@ add_tfunc(issubtype, 2, 2,
                   end
               end
               return Bool
-          end)
+          end, 0)
 
 function type_depth(t::ANY)
     if t === Bottom
@@ -876,8 +880,8 @@ function getfield_tfunc(s00::ANY, name)
     # in the current type system
     return rewrap_unionall(limit_type_depth(R, 0), s00)
 end
-add_tfunc(getfield, 2, 2, (s::ANY, name::ANY) -> getfield_tfunc(s, name))
-add_tfunc(setfield!, 3, 3, (o::ANY, f::ANY, v::ANY) -> v)
+add_tfunc(getfield, 2, 2, (s::ANY, name::ANY) -> getfield_tfunc(s, name), 1)
+add_tfunc(setfield!, 3, 3, (o::ANY, f::ANY, v::ANY) -> v, 3)
 function fieldtype_tfunc(s0::ANY, name::ANY)
     if s0 === Any || s0 === Type || DataType ⊑ s0 || UnionAll ⊑ s0
         return Type
@@ -937,7 +941,7 @@ function fieldtype_tfunc(s0::ANY, name::ANY)
     end
     return Type{<:ft}
 end
-add_tfunc(fieldtype, 2, 2, fieldtype_tfunc)
+add_tfunc(fieldtype, 2, 2, fieldtype_tfunc, 0)
 
 function valid_tparam(x::ANY)
     if isa(x,Tuple)
@@ -1064,7 +1068,7 @@ function apply_type_tfunc(headtypetype::ANY, args::ANY...)
     end
     return ans
 end
-add_tfunc(apply_type, 1, IInf, apply_type_tfunc)
+add_tfunc(apply_type, 1, IInf, apply_type_tfunc, 10)
 
 @pure function type_typeof(v::ANY)
     if isa(v, Type)
@@ -2912,7 +2916,7 @@ end
 function isinlineable(m::Method, src::CodeInfo)
     # compute the cost (size) of inlining this code
     inlineable = false
-    cost = 1000
+    cost_threshold = 200
     if m.module === _topmod(m.module)
         name = m.name
         sig = m.sig
@@ -2922,11 +2926,11 @@ function isinlineable(m::Method, src::CodeInfo)
             inlineable = true
         elseif (name === :next || name === :done || name === :unsafe_convert ||
                 name === :cconvert)
-            cost ÷= 4
+            cost_threshold *= 4
         end
     end
     if !inlineable
-        inlineable = inline_worthy_stmts(src.code, cost)
+        inlineable = inline_worthy_stmts(src.code, src, cost_threshold)
     end
     return inlineable
 end
@@ -4008,9 +4012,9 @@ function inlineable(f::ANY, ft::ANY, e::Expr, atypes::Vector{Any}, sv::Inference
             # tuples, since we want to be able to inline those functions to
             # avoid the tuple allocation.
             current_stmts = vcat(sv.src.code, pending_stmts)
-            if inline_worthy_stmts(current_stmts)
+            if inline_worthy_stmts(current_stmts, sv.src)
                 append!(current_stmts, ast)
-                if !inline_worthy_stmts(current_stmts)
+                if !inline_worthy_stmts(current_stmts, sv.src)
                     return invoke_NF(argexprs0, e.typ, atypes, sv, atype_unlimited,
                                      invoke_data)
                 end
@@ -4076,7 +4080,7 @@ function inlineable(f::ANY, ft::ANY, e::Expr, atypes::Vector{Any}, sv::Inference
             end
         end
         free = effect_free(aei, sv.src, sv.mod, true)
-        if ((occ==0 && aeitype===Bottom) || (occ > 1 && !inline_worthy(aei, occ*2000)) ||
+        if ((occ==0 && aeitype===Bottom) || (occ > 1 && !inline_worthy(aei, sv.src)) || #, occ*2000)) ||
                 (affect_free && !free) || (!affect_free && !effect_free(aei, sv.src, sv.mod, false)))
             if occ != 0
                 vnew = newvar!(sv, aeitype)
@@ -4255,37 +4259,128 @@ function inlineable(f::ANY, ft::ANY, e::Expr, atypes::Vector{Any}, sv::Inference
     return (expr, stmts)
 end
 
-inline_worthy(body::ANY, cost::Integer) = true
+inline_worthy(body::ANY, src::CodeInfo, cost_threshold::Integer=200) = true
 
-# should the expression be part of the inline cost model
-function inline_ignore(ex::ANY)
-    if isa(ex, LineNumberNode) || ex === nothing
-        return true
+function statement_cost(ex::ANY, src::CodeInfo)
+    if isa(ex, LineNumberNode) || isa(ex, LabelNode) || isa(ex, SSAValue) ||
+            isa(ex, NewvarNode) || isa(ex, Slot) || isa(ex, GotoNode) ||
+            isa(ex, GlobalRef) || isa(ex, Number) || isa(ex, Symbol) ||
+            isa(ex, String) || isa(ex, Char) ||
+            isa(ex, Type) || isa(ex, MethodInstance) || isa(ex, QuoteNode) ||
+            isa(ex, Tuple) || ex === nothing
+        return 0
     end
-    return isa(ex, Expr) && is_meta_expr(ex::Expr)
+    if isa(ex, Expr)
+        exex = ex::Expr
+        is_meta_expr(exex) && return 0
+        if exex.head == :return
+            return statement_cost(exex.args[1], src)
+        end
+        if  exex.head == :(=)
+            return statement_cost(exex.args[end], src)
+        end
+        if exex.head == :call
+            callfunc = exex.args[1]
+            if isa(callfunc, SSAValue) || isa(callfunc, Slot)
+                return 100  # perhaps it would be better to be able to look these up?
+            end
+            if isa(callfunc, Type) || isa(callfunc, QuoteNode)
+                return 0
+            end
+            if isa(callfunc, Expr)
+                # This is a parametric type conversion/construction
+                head = (callfunc::Expr).head
+                if head == :static_parameter || head == :call
+                    cost = 0
+                    for i = 2:length(exex.args)
+                        cost += statement_cost(exex.args[i], src)
+                    end
+                    return cost
+                end
+                stmt_cost_error("unhandled callfunc expr ", callfunc)
+            end
+            if isa(callfunc, GlobalRef)
+                grfunc = abstract_eval_global(callfunc.mod, callfunc.name)
+                if isa(grfunc, Type)
+                    return 0
+                end
+                if isa(grfunc, Const)
+                    f = (grfunc::Const).val
+                    if isa(f, IntrinsicFunction)
+                        iidx = Int(reinterpret(Int32, f::IntrinsicFunction)) + 1
+                        if !isassigned(t_ifunc_cost, iidx)
+                            # unknown/unhandled intrinsic (most fall in this category since most return an unboxed value)
+                            return 100
+                        end
+                        return t_ifunc_cost[iidx]
+                    end
+                    if isa(f, Function)
+                        fidx = findfirst(t_ffunc_key, f::Function)
+                        if fidx == 0
+                            # unknown/unhandled builtin or anonymous function
+                            return 100
+                        end
+                        return t_ffunc_cost[fidx]
+                    end
+                    if f == UnionAll
+                        return 100
+                    end
+                    if isa(f, Type)
+                        return 0
+                    end
+                    stmt_cost_error("unhandled f, ", f, " of type ", typeof(f))
+                end
+                stmt_cost_error("unhandled grfunc, ", grfunc, " of type ", typeof(grfunc))
+            end
+            stmt_cost_error("unhandled callfunc, ", callfunc, " with type ", typeof(callfunc))
+        elseif exex.head == :foreigncall || exex.head == :invoke
+            return 50
+        elseif exex.head == :gotoifnot
+            return statement_cost(exex.args[1], src)
+        else
+            head = exex.head
+            if (head == :null) | (head == :new) | (head == :enter) | (head == :leave) |
+                    (head == :the_exception) | (head == :static_parameter) |
+                    (head == :copyast) | (head == :const)
+                return 0
+            end
+        end
+        stmt_cost_error("unhandled expression with head ", exex.head)
+    end
+    println("unhandled ex, ", ex, " of type ", typeof(ex))
+    return 0
 end
 
-function inline_worthy_stmts(stmts::Vector{Any}, cost::Integer = 1000)
+function stmt_cost_error(args...)
+    println(args...)
+    error("statement_cost is broken")
+end
+
+function inline_worthy_stmts(stmts::Vector{Any}, src::CodeInfo, cost_threshold::Integer=200)
     body = Expr(:block)
     body.args = stmts
-    return inline_worthy(body, cost)
+    return inline_worthy(body, src, cost_threshold)
 end
 
-function inline_worthy(body::Expr, cost::Integer=1000) # precondition: 0 < cost; nominal cost = 1000
-    symlim = 1000 + 5_000_000 ÷ cost
-    nstmt = 0
-    for stmt in body.args
-        if !(isa(stmt, SSAValue) || inline_ignore(stmt))
-            nstmt += 1
+function inline_worthy(body::Expr, src::CodeInfo, cost_threshold::Integer=200)
+#    push!(Main.hacklog, body)
+    bodycost = 0
+    if body.head == :block
+        for stmt in body.args
+#            push!(Main.hacklog, stmt)
+            thiscost = statement_cost(stmt, src)
+#            Main.@show stmt thiscost
+            bodycost += thiscost
         end
+    else
+        bodycost = statement_cost(body, src)
+#        Main.@show body bodycost
     end
-    if nstmt < (symlim + 500) ÷ 1000
-        symlim *= 16
-        symlim ÷= 1000
-        if occurs_more(body, e->!inline_ignore(e), symlim) < symlim
-            return true
-        end
+    if bodycost < cost_threshold
+#        push!(Main.hacklog, (:inline_worthy, body, cost, bodycost, true))
+        return true
     end
+#    push!(Main.hacklog, (:inline_worthy, body, cost, bodycost, false))
     return false
 end
 
