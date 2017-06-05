@@ -1546,8 +1546,19 @@ function abstract_call_method(method::Method, f::ANY, sig::ANY, sparams::SimpleV
     sigtuple = unwrap_unionall(sig)::DataType
 
     tm = _topmod(sv)
-    if !istopfunction(tm, f, :promote_typeof) && !istopfunction(tm, f, :getindex) && !(method.sig == Tuple{Type, Any})
-        # limit argument type tuple growth
+    if (# promote_typeof signature may be used with many arguments
+          !istopfunction(tm, f, :promote_typeof)
+        # assume that promote_rules are reasonable and convergent (otherwise inference on UnionAll types can poison the cache)
+       && !istopfunction(tm, f, :promote_type)
+       && !istopfunction(tm, f, :promote_result)
+        # assume getindex methods aren't directly recursive, since wrappers like ReshapedArrays won't look like it here
+        # should still manage to detect recursive growth either via other intermediate methods or actual type-equal signature recursion
+       && !istopfunction(tm, f, :getindex)
+       && !istopfunction(tm, f, :setindex!)
+        # the construct-to-convert method is a bottleneck in inference,
+        # so just assume that recursion will get prevented at some other point
+       && !(method.sig == Tuple{Type, Any}))
+        # otherwise: limit argument type tuple growth of all other functions
         msig = unwrap_unionall(method.sig)
         lsig = length(msig.parameters)
         ls = length(sigtuple.parameters)
