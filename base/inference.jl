@@ -5,6 +5,7 @@ import Core: _apply, svec, apply_type, Builtin, IntrinsicFunction, MethodInstanc
 #### parameters limiting potentially-infinite types ####
 const MAX_TYPEUNION_LEN = 3
 const MAX_TYPE_DEPTH = 8
+const TUPLE_COMPLEXITY_LIMIT_DEPTH = 3
 
 const MAX_INLINE_CONST_SIZE = 256
 
@@ -750,91 +751,164 @@ end
 function limit_type_size(t::ANY, compare::ANY, source::ANY)
     source = svec(unwrap_unionall(compare), unwrap_unionall(source))
     source[1] === source[2] && (source = svec(source[1]))
-    type_more_complex(t, compare, source) || return t
+    type_more_complex(t, compare, source, TUPLE_COMPLEXITY_LIMIT_DEPTH) || return t
     r = _limit_type_size(t, compare, source)
     #@assert !isa(t, Type) || t <: r
     return r
 end
 
-function type_more_complex(t::ANY, c::ANY, sources::SimpleVector)
+sym_isless(a::Symbol, b::Symbol) = ccall(:strcmp, Int32, (Ptr{UInt8}, Ptr{UInt8}), a, b) < 0
+
+function type_more_complex(t::ANY, c::ANY, sources::SimpleVector, tupledepth::Int)
+    # detect cases where the comparison is already trivially true
+    if t === c
+        return false
+    elseif t === Union{}
+        return false # Bottom is as simple as they come
+    elseif isa(t, DataType) && isempty(t.parameters)
+        return false # fastpath: unparameterized types are always finite
+    elseif tupledepth > 0 && isa(t, Type) && isa(c, Type) && c !== Union{} && c <: t
+        return false # t is already wider than the comparison
+    elseif tupledepth > 0 && is_derived_type_from_any(unwrap_unionall(t), sources)
+        return false # t isn't something new
+    end
+    # peel off wrappers
+    if isa(c, UnionAll)
+        # allow wrapping type with fewer UnionAlls than comparison if in a covariant context
+        if !isa(t, UnionAll) && tupledepth == 0
+            return true
+        end
+        t = unwrap_unionall(t)
+        c = unwrap_unionall(c)
+    end
+    # rules for various comparison types
     if isa(c, TypeVar)
         if isa(t, TypeVar)
-            return type_more_complex(t.ub, c.ub, sources) ||
-                   type_more_complex(t.lb, c.lb, sources)
+            return !(t.lb === Union{} || t.lb === c.lb) || # simplify lb towards Union{}
+                   type_more_complex(t.ub, c.ub, sources, tupledepth)
         end
+        c.lb === Union{} || return true
+        return type_more_complex(t, c.ub, sources, max(tupledepth, 1)) # allow replacing a TypeVar with a concrete value
     elseif isa(c, Union)
         if isa(t, Union)
-            return type_more_complex(t.a, c.a, sources) ||
-                   type_more_complex(t.b, c.b, sources)
+            return type_more_complex(t.a, c.a, sources, tupledepth) ||
+                   type_more_complex(t.b, c.b, sources, tupledepth)
         end
-        return type_more_complex(t, c.a, sources) &&
-               type_more_complex(t, c.b, sources)
-    elseif isa(c, UnionAll)
-        if isa(t, UnionAll)
-            return type_more_complex(t.body, c.body, sources)
-        end
-    elseif isa(t, DataType)
-        if isa(c, DataType)
-            tP = t.parameters
-            isempty(tP) && return false
-            if t.name === c.name
-                cP = c.parameters
-                length(tP) > length(cP) && return true
-                for i = 1:length(tP)
-                    type_more_complex(tP[i], cP[i], sources) && return true
-                end
-            else # allow deviation in the type name, if all of its parameters came from the sources
-                for i = 1:length(tP)
-                    for s in sources
-                        is_derived_type(tP[i], s) || return true
+        return type_more_complex(t, c.a, sources, tupledepth) &&
+               type_more_complex(t, c.b, sources, tupledepth)
+    elseif isa(t, Int) && isa(c, Int)
+        return t !== 1 # alternatively, could use !(0 <= t < c)
+    end
+    # base case for data types
+    if isa(t, DataType)
+        tP = t.parameters
+        if isa(c, DataType) && t.name === c.name
+            cP = c.parameters
+            length(cP) < length(tP) && return true
+            ntail = length(cP) - length(tP) # assume parameters were dropped from the tuple head
+            # allow creating variation within a nested tuple, but only so deep
+            if t.name === Tuple.name && tupledepth > 0
+                tupledepth -= 1
+            elseif !isvarargtype(t)
+                tupledepth = 0
+            end
+            isgenerator = (t.name.name === :Generator && t.name.module === _topmod(t.name.module))
+            for i = 1:length(tP)
+                tPi = tP[i]
+                cPi = cP[i + ntail]
+                if isgenerator
+                    let tPi = unwrap_unionall(tPi),
+                        cPi = unwrap_unionall(cPi)
+                        if isa(tPi, DataType) && isa(cPi, DataType) &&
+                                !tPi.abstract && !cPi.abstract &&
+                                sym_isless(cPi.name.name, tPi.name.name)
+                            # allow collect on (anonymous) Generators to nest, provided that their functions are appropriately ordered
+                            # TODO: is there a better way
+                            continue
+                        end
                     end
                 end
+                type_more_complex(tPi, cPi, sources, tupledepth) && return true
             end
             return false
         end
-        if isType(t) # allow taking typeof a source type as Type{...}, as long as it isn't nesting Type{Type{...}}
+        if tupledepth > 0
+            # allow deviation in the type name, if all of its parameters are also monotonically simpler
+            for i = 1:length(tP)
+                is_derived_type_from_any(tP[i], sources) || return true
+            end
+            return false
+        end
+        if isType(t) # allow taking typeof any source type anywhere as Type{...}, as long as it isn't nesting Type{Type{...}}
             tt = unwrap_unionall(t.parameters[1])
             if isa(tt, DataType) && !isType(tt)
-                for s in sources
-                    is_derived_type(tt, s) && return false
-                end
+                is_derived_type_from_any(tt, sources) || return true
+                return false
             end
         end
-    elseif t === c
-        return false
-    elseif isa(t, Int) && isa(c, Int)
-        return t === 1 # alternatively: 0 <= t < c
     end
     return true
 end
 
 function is_derived_type(t::ANY, c::ANY) # try to find `type` somewhere in `comparison` type
     t === c && return true
-    if isa(c, Union)
+    if isa(c, TypeVar)
+        # see if it is replacing a TypeVar upper bound with something simpler
+        return is_derived_type(t, c.ub)
+    elseif isa(c, Union)
+        # see if it is one of the elements of the union
         return is_derived_type(t, c.a) || is_derived_type(t, c.b)
     elseif isa(c, UnionAll)
+        # see if it is derived from the body
         return is_derived_type(t, c.body)
     elseif isa(c, DataType)
-        super = supertype(c)
-        while super !== Any
-            t === super && return true
-            super = supertype(super)
+        if isa(t, DataType)
+            # see if it is one of the supertypes of a parameter
+            super = supertype(c)
+            while super !== Any
+                t === super && return true
+                super = supertype(super)
+            end
         end
+        # see if it was extracted from a type parameter
         cP = c.parameters
         for p in cP
             is_derived_type(t, p) && return true
+        end
+        if isleaftype(c) && isbits(c)
+            # see if it was extracted from a fieldtype
+            # however, only look through types that can be inlined
+            # to ensure monotonicity of derivation
+            # since we know that for immutable types,
+            # the field types must have been constructed prior to the type,
+            # it cannot have a reference cycle in the type graph
+            cF = c.types
+            for f in cF
+                is_derived_type(t, f) && return true
+            end
         end
     end
     return false
 end
 
+function is_derived_type_from_any(t::ANY, sources::SimpleVector)
+    for s in sources
+        is_derived_type(t, s) && return true
+    end
+    return false
+end
+
 function _limit_type_size(t::ANY, c::ANY, sources::SimpleVector) # type vs. comparison which was derived from source
-    t === c && return t # quick egal test
-    isa(t, Type) && isa(c, Type) && c <: t && return t # t is already wider than the comparison
-    let baset = unwrap_unionall(t)
-        for s in sources
-            is_derived_type(baset, s) && return t # t isn't something new
-        end
+    if t === c
+        return t # quick egal test
+    elseif t === Union{}
+        return t # easy case
+    elseif isa(t, DataType) && isempty(t.parameters)
+        return t # fast path: unparameterized are always simple
+    elseif isa(t, Type) && isa(c, Type) && c !== Union{} && c <: t
+        return t # t is already wider than the comparison
+    elseif is_derived_type_from_any(unwrap_unionall(t), sources)
+        return t # t isn't something new
     end
     if isa(t, TypeVar)
         if isa(c, TypeVar)
@@ -876,7 +950,6 @@ function _limit_type_size(t::ANY, c::ANY, sources::SimpleVector) # type vs. comp
         if isa(c, DataType)
             tP = t.parameters
             cP = c.parameters
-            isempty(tP) && return t
             if t.name === c.name && !isempty(cP)
                 if isvarargtype(t)
                     VaT = _limit_type_size(tP[1], cP[1], sources)
@@ -895,7 +968,7 @@ function _limit_type_size(t::ANY, c::ANY, sources::SimpleVector) # type vs. comp
                         Q[np] = tuple_tail_elem(Bottom, Any[ tP[i] for i in np:length(tP) ])
                     end
                     for i = 1:np
-                        Q[i] = _limit_type_size(Q[i], cP[i], sources)
+                        Q[i] = _limit_type_size(Q[i], cP[i], sources) # TODO: apply type_more_complex here?
                     end
                     return Tuple{Q...}
                 end
@@ -904,9 +977,7 @@ function _limit_type_size(t::ANY, c::ANY, sources::SimpleVector) # type vs. comp
         if isType(t) # allow taking typeof as Type{...}, but ensure it doesn't start nesting
             tt = unwrap_unionall(t.parameters[1])
             if isa(tt, DataType) && !isType(tt)
-                for s in sources
-                    is_derived_type(tt, s) && return t
-                end
+                is_derived_type_from_any(tt, sources) && return t
             end
         end
         return t.name.wrapper
@@ -1548,9 +1619,6 @@ function abstract_call_method(method::Method, f::ANY, sig::ANY, sparams::SimpleV
     tm = _topmod(sv)
     if (# promote_typeof signature may be used with many arguments
           !istopfunction(tm, f, :promote_typeof)
-        # assume that promote_rules are reasonable and convergent (otherwise inference on UnionAll types can poison the cache)
-       && !istopfunction(tm, f, :promote_type)
-       && !istopfunction(tm, f, :promote_result)
         # assume getindex methods aren't directly recursive, since wrappers like ReshapedArrays won't look like it here
         # should still manage to detect recursive growth either via other intermediate methods or actual type-equal signature recursion
        && !istopfunction(tm, f, :getindex)
@@ -1589,7 +1657,7 @@ function abstract_call_method(method::Method, f::ANY, sig::ANY, sparams::SimpleV
         end
 
         # TODO: FIXME: this heuristic depends on non-local state making type-inference unpredictable
-        # it also should to be integrated into the cycle resolution and iterated to convergence
+        # it also should be integrated into the cycle resolution and iterated to convergence
         if topmost !== nothing
             # impose limit if we recur on the same method and the argument type complexity is growing or is beyond MAX_TYPE_DEPTH
             newsig = sig
